@@ -3,6 +3,7 @@ import { atom, useAtom } from 'jotai';
 import React from 'react';
 import {
   ColorPicker,
+  Select,
   InputNumber,
   Space,
   Card,
@@ -18,11 +19,15 @@ const layers = atom([]);
 const mapRef = React.createRef();
 
 let mapInstance;
+let drawingManager;
 
 const polygonOptions = {
-  strokeThickness: 1, // 多边形边线宽度
-  strokeColor: "rgba(242, 12, 31, 1)", // 多边形边线颜色
-  fillColor: "rgba(245, 5, 25, 0.21)", // 多边形填充颜色
+  strokeWeight: 1, // 多边形边线宽度
+  strokeColor: "#4250FF", // 多边形边线颜色
+  fillColor: "#4250FF", // 多边形填充颜色。当参数为空时，多边形将没有填充效果。
+  strokeOpacity: 1, // 边线透明度，取值范围0 - 1。
+  fillOpacity: 0.2, // 填充透明度，取值范围0 - 1。
+  strokeStyle: "solid", // 边线样式，solid或dashed。
 };
 
 function drawOverlay(layer, index, setIndex) {
@@ -30,23 +35,19 @@ function drawOverlay(layer, index, setIndex) {
     console.log('no points')
     return;
   }
-  const overlay = new window.Microsoft.Maps.Polygon(
-    layer.points.map(point => new window.Microsoft.Maps.Location(point.lat, point.lng)),
+  const overlay = new window.BMapGL.Polygon(
+    layer.points.map(point => new window.BMapGL.Point(point.lng, point.lat)),
     layer.polygonOptions || polygonOptions,
   );
-  mapInstance.entities.push(overlay);
+  mapInstance.addOverlay(overlay);
   if (layer._id) {
-    window.Microsoft.Maps.Events.addHandler(overlay, 'mouseover', () => {
-      overlay.setOptions({
-        fillOpacity: 0.6,
-      });
+    overlay.addEventListener('mouseover', () => {
+      overlay.setFillOpacity(0.6);
     });
-    window.Microsoft.Maps.Events.addHandler(overlay, 'mouseout', () => {
-      overlay.setOptions({
-        fillOpacity: 0.2,
-      });
+    overlay.addEventListener('mouseout', () => {
+      overlay.setFillOpacity(0.2);
     });
-    window.Microsoft.Maps.Events.addHandler(overlay, 'click', e => {
+    overlay.addEventListener('click', e => {
       setIndex(index);
     });
   }
@@ -59,56 +60,53 @@ export default function FarmLand() {
 
   React.useEffect(() => {
     // 初始化地图
-    mapInstance = new window.Microsoft.Maps.Map(mapRef.current, {});
-    window.Microsoft.Maps.loadModule('Microsoft.Maps.DrawingTools', () => {
-      const tools = new window.Microsoft.Maps.DrawingTools(mapInstance);
-      tools.showDrawingManager(function (manager) {
-        console.log('Drawing manager loaded.');
-        manager.setOptions({
-          drawingBarActions: window.Microsoft.Maps.DrawingTools.DrawingMode.polygon,
-          polygonOptions,
-        });
-        window.Microsoft.Maps.Events.addHandler(manager, 'drawingEnded', function (polygon) {
-          const points = polygon.getLocations().map(loc => ({
-            lng: loc.longitude,
-            lat: loc.latitude,
-          })); // 获取多边形的坐标点数组
-          console.log(points);
-          fetch(`${process.env.REACT_APP_BING_LAYER_API}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              points,
-            }),
-          }).then(res => res.json()).then(data => {
-            setLayers(data.data);
-          });
-        });
-      });
-
-      fetch(`${process.env.REACT_APP_BING_LAYER_API}`)
-        .then(res => res.json())
-        .then(data => {
-          mapInstance.setView({
-            center: new window.Microsoft.Maps.Location(39.897445, 116.331398),
-            zoom: 11,
-          });
-          if (data.data.some(layer => layer.points)) {
-            const [point] = data.data.find(layer => Array.isArray(layer.points)).points;
-            mapInstance.setView({
-              center: new window.Microsoft.Maps.Location(point.lat, point.lng),
-              zoom: 17,
-            });
-          }
-          setLayers(data.data);
-        });
+    mapInstance = new window.BMapGL.Map(mapRef.current);
+    mapInstance.setMapType(window.BMAP_SATELLITE_MAP);
+    mapInstance.enableScrollWheelZoom(true);
+    drawingManager = new window.BMapGLLib.DrawingManager(mapInstance, {
+      isOpen: false, // 是否开启绘制模式
+      enableDrawingTool: true, // 是否显示工具栏
+      drawingToolOptions: {
+        anchor: window.BMAP_ANCHOR_TOP_RIGHT, // 工具栏位置
+        offset: new window.BMapGL.Size(5, 5), // 工具栏偏移量
+        drawingModes: [
+          window.BMAP_DRAWING_POLYGON,
+        ],
+      },
+      polygonOptions,
     });
+    drawingManager.addEventListener("polygoncomplete", function (polygon) {
+      const points = polygon.getPath(); // 获取多边形的坐标点数组
+      console.log(points);
+      fetch(`${process.env.REACT_APP_LAYER_API}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          points,
+        }),
+      }).then(res => res.json()).then(data => {
+        setLayers(data.data);
+      });
+    });
+    fetch(`${process.env.REACT_APP_LAYER_API}`)
+      .then(res => res.json())
+      .then(data => {
+        mapInstance.centerAndZoom(new window.BMapGL.Point(116.331398, 39.897445), 11);
+        if (data.data.some(layer => layer.points)) {
+          const [point] = data.data.find(layer => Array.isArray(layer.points)).points;
+          mapInstance.centerAndZoom(new window.BMapGL.Point(point.lng, point.lat), 17);
+        } else {
+          mapInstance.centerAndZoom(data.center, data.zoomLevel);
+        }
+        // setCenter(data.center);
+        setLayers(data.data);
+      });
   }, []);
 
   React.useEffect(() => {
-    mapInstance?.entities?.clear?.();
+    mapInstance?.clearOverlays?.();
     _layers.forEach((layer, index) => drawOverlay(layer, index, setIndex));
   }, [_layers, setIndex]);
 
@@ -152,7 +150,7 @@ export default function FarmLand() {
       <div
         ref={mapRef}
         className="mb-6 w-full rounded-lg shadow-lg dark:shadow-black/20 relative h-[45vh]">
-        {!window.Microsoft.Maps ? 'No BMap Found' : ''}
+        {!window.BMapGL ? 'No BMap Found' : ''}
       </div>
 
       <LandConf index={showingIndex} />
@@ -167,16 +165,13 @@ function LandConf({ index: rowIndex }) {
   React.useEffect(() => {
     const [point] = row?.points || [];
     if (point?.lng && point.lat) {
-      mapInstance.setView({
-        center: new window.Microsoft.Maps.Location(point.lat, point.lng),
-        zoom: 17,
-      });
+      mapInstance.centerAndZoom(new window.BMapGL.Point(point.lng, point.lat), 17);
     }
   }, [row]);
 
   const onUpdate = useMutation({
     mutationFn: row => {
-      return fetch(`${process.env.REACT_APP_BING_LAYER_API}`, {
+      return fetch(`${process.env.REACT_APP_LAYER_API}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -192,7 +187,7 @@ function LandConf({ index: rowIndex }) {
 
   const onDelete = useMutation({
     mutationFn: id => {
-      return fetch(`${process.env.REACT_APP_BING_LAYER_API}`, {
+      return fetch(`${process.env.REACT_APP_LAYER_API}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -284,18 +279,16 @@ function LandConf({ index: rowIndex }) {
       <Col span={6}>
         <Space direction="vertical" className="w-[90%]">
           <div>
-            <h5>strokeThickness</h5>
+            <h5>strokeWeight</h5>
             <InputNumber
               disabled={onUpdate.isPending || onDelete.isPending}
               min={1}
-              value={row.polygonOptions?.strokeThickness ?? polygonOptions.strokeThickness}
-              onChange={v => setStyle('strokeThickness', v)} />
+              value={row.polygonOptions?.strokeWeight ?? polygonOptions.strokeWeight}
+              onChange={v => setStyle('strokeWeight', v)} />
           </div>
           <div>
             <h5>strokeColor</h5>
             <ColorPicker
-              format="RGBA"
-              enableAlpha
               disabled={onUpdate.isPending || onDelete.isPending}
               value={row.polygonOptions?.strokeColor ?? polygonOptions.strokeColor}
               onChange={v => setStyle('strokeColor', v)} />
@@ -303,11 +296,40 @@ function LandConf({ index: rowIndex }) {
           <div>
             <h5>fillColor</h5>
             <ColorPicker
-              format="RGBA"
-              enableAlpha
               disabled={onUpdate.isPending || onDelete.isPending}
               value={row.polygonOptions?.fillColor ?? polygonOptions.fillColor}
               onChange={v => setStyle('fillColor', v)} />
+          </div>
+          <div>
+            <h5>strokeOpacity</h5>
+            <InputNumber
+              disabled={onUpdate.isPending || onDelete.isPending}
+              min={.1}
+              step={.1}
+              max={1}
+              value={row.polygonOptions?.strokeOpacity ?? polygonOptions.strokeOpacity}
+              onChange={v => setStyle('strokeOpacity', v)} />
+          </div>
+          <div>
+            <h5>fillOpacity</h5>
+            <InputNumber
+              disabled={onUpdate.isPending || onDelete.isPending}
+              min={.1}
+              step={.1}
+              max={1}
+              value={row.polygonOptions?.fillOpacity ?? polygonOptions.fillOpacity}
+              onChange={v => setStyle('fillOpacity', v)} />
+          </div>
+          <div>
+            <h5>strokeStyle</h5>
+            <Select
+              disabled={onUpdate.isPending || onDelete.isPending}
+              options={[
+                { label: 'solid', value: 'solid' },
+                { label: 'dashed', value: 'dashed' },
+              ]}
+              value={row.polygonOptions?.strokeStyle ?? polygonOptions.strokeStyle}
+              onChange={v => setStyle('strokeStyle', v)} />
           </div>
         </Space>
       </Col>
